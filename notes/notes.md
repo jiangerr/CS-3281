@@ -32,6 +32,11 @@
       - [Signal actions and signal handlers](#signal-actions-and-signal-handlers)
     - [Virtual Memory](#virtual-memory)
       - [Address spaces](#address-spaces)
+      - [Why virtual memory?](#why-virtual-memory)
+      - [VM as a caching tool](#vm-as-a-caching-tool)
+      - [VM as memory management tool](#vm-as-memory-management-tool)
+      - [VM as memory protection tool](#vm-as-memory-protection-tool)
+      - [Address translation](#address-translation)
 
 ### Virtualization and System Calls
 
@@ -411,6 +416,61 @@
   - used in all modern servers, computers, phones, etc.
   ![](photos/virtualaddressing.png)
 #### Address spaces
-- **linear**: $\{0, 1, 2, \dots, n\}$
+- linear: $\{0, 1, 2, \dots \}$
   - ordered set $\in \mathbb{N^+}$
-- **virtual**: 
+- **virtual**: set of $N=2^n$ virtual addresses
+  - $\{ 0,1,\dots,N-1 \}$
+- **physical**: set of $M=2^m$ physical addresses
+  - $\{ 0,1,\dots,M-1 \}$
+- note: $n,m$ are the number of address bits
+#### Why virtual memory?
+1. efficient use of main memory
+     - DRAM used as cache for parts of virtual address space
+2. simplified memory management
+     - processes each get the same uniform linear address space
+3. isolates address spaces
+     - processes can't interfere w/ each other's memory
+     - user programs don't have access to privileged kernel code
+#### VM as a caching tool
+- we conceptualize VM as an *array of $N$ contiguous bytes* stored on disk
+![](photos/dramcache.png)
+- DRAM cache
+  - DRAM usually ~10x slower than SRAM (disk is 10000x slower than DRAM)
+- **page table**: array of page table entries, maps virtual pages to physical ones
+  - page entries: simply a grouping construct for bytes, typically ~4KB per page
+    - transferred as a single unit
+![](photos/pagetable.png)
+  - page hit: referenced VM word in physical memory (DRAM cache hit)
+    - ex. reference to page @ PTE 1
+  - page fault: referenced VM word not in physical memory (DRAM cache miss)
+    - ex. reference to page @ PTE 3
+    - this is an exception, so page fault triggers page fault handler
+    - **page fault handler** selects victim to evict from DRAM and replace with the offending page, which is then restarted
+      - waiting until a miss to copy a page to DRAM is called *demand paging*
+- using locality to optimize allocation
+  - VM is only efficient when locality is taken advantage of
+  - at any given point in time, a program tends to access a set of virtual pages (the **working set**)
+    - programs with better temporal locality have smaller working sets
+  - if size of working sets grows beyond size of main memory, we encounter *thrashing*
+    - performance melts down as pages are swapped in and out continuously
+#### VM as memory management tool
+- each process has its own virtual address space, which it sees as a simple linear array
+- in actuality, a mapping function scatters a process' addresses throughout physical memory
+  - a well-chosen mapping function can improve locality
+1. simplifies memory allocation
+    - any virtual page can be mapped to any physical page
+    - virtual apge can be stored in different physical pages at different times
+2. allows for sharing of code/data across processes
+    - can map virtual pages in different process virtual address spaces to same physical page
+    ![](photos/vmmemorymanagement.png)
+#### VM as memory protection tool
+- we extend page table entries (PTEs) with permission bits
+  - memory management unit (MMU) checks these bits on each access
+![](photos/vmmemoryprotection.png)
+#### Address translation
+- $MAP: \; V \rightarrow P \cup \emptyset$
+  - $V$ is virtual memory, $P$ is physical memory
+- $MAP(a)=a'$ if data at virtual address $a$ is at physical address $a' \in P$
+- $MAP(a)=\emptyset$ if data at $a$ is not in physical memory
+  - either invalid or stored on disk
+- 
