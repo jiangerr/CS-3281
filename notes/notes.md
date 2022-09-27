@@ -37,6 +37,12 @@
       - [VM as memory management tool](#vm-as-memory-management-tool)
       - [VM as memory protection tool](#vm-as-memory-protection-tool)
       - [Address translation](#address-translation)
+      - [Address translation](#address-translation-1)
+      - [Translation lookaside buffers (TLBs)](#translation-lookaside-buffers-tlbs)
+      - [Multi-level page tables](#multi-level-page-tables)
+    - [Virtual Memory, Continued](#virtual-memory-continued)
+      - [Review of symbols](#review-of-symbols)
+      - [Simple memory system example](#simple-memory-system-example)
 
 ### Virtualization and System Calls
 
@@ -473,4 +479,63 @@
 - $MAP(a)=a'$ if data at virtual address $a$ is at physical address $a' \in P$
 - $MAP(a)=\emptyset$ if data at $a$ is not in physical memory
   - either invalid or stored on disk
-- 
+#### Address translation
+![](photos/pagetabletranslation.png)
+- page hit ($valid=1$)
+![](photos/translationhit.png)
+  1. processor sends virtual address to MMU
+  2. page table entry address (PTEA) sent to cache/memory
+  3. page table entry (PTE) received
+  4. MMU sends physical address to cache/memory
+  5. cache/memory sends data word to processor
+- page fault ($valid=0$)
+![](photos/translationfault.png)
+  1. same as above
+  2. same as above
+  3. same as above
+  4. $valid=0$ triggers page fault exception
+  5. handler identifies victim to evict from memory
+  6. handler puts new page into memory, updates PTE ($valid=1$)
+  7. handler returns to original process and restarts faulting instruction
+- summary:
+![](photos/translationsummary.png)
+#### Translation lookaside buffers (TLBs)
+- PTEs are cached in L1 like everything else, so they may be evicted by other data references
+  - PTE hits still require small L1 delay
+- TLBs as a solution
+  - small set-associative hardware cache in MMU
+  - maps virtual and physical page #s
+  - contains complete PTEs for small number of pages
+- accessing
+![](photos/TLBaccess.png)
+  - hit
+    ![](photos/TLBhit.png)
+    - eliminates a memory access
+  - miss
+    ![](photos/TLBmiss.png)
+    - misses incur additional memory access but are rare (see below)
+#### Multi-level page tables
+- example: suppose we have 4KB ($2^{12}$) page size, 48-length address space, 8-byte ($2^3$) PTE
+  - address would be $48-12+3=39$ bytes $\implies 2^{39}$ bytes for entire page table (roughly half a terabyte)
+- MLPTs allow us to combat this memory issue
+  - MLPTs technically can have as many levels of nesting as needed
+- inner level page tables: PTEs point to another page table (always memory resident)
+- final level page table: PTEs point to normal page (act as a normal PT)
+- example: two-level page table
+![](photos/twolevelpagetable.png)
+- MLPT translation
+![](photos/mlpttranslation.png)
+
+### Virtual Memory, Continued
+#### Review of symbols
+- $N=2^n$ is the number of addresses in virtual address space
+- $M=2^m$ is the number of addresses in physical address space
+- $P=2^p$ is the page size, in bytes
+- components of virtual address (VA)
+#### Simple memory system example
+- addressing (given info)
+  - virtual addresses: 14-bit
+  - physical addresses: 12-bit
+  - page size: 64 bytes $\implies$ page offset of $p=5 \; (2^5 = 64)$ bytes
+    ![](photos/memoryexample.png)
+  -
