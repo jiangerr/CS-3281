@@ -43,6 +43,34 @@
     - [Virtual Memory, Continued](#virtual-memory-continued)
       - [Review of symbols](#review-of-symbols)
       - [Simple memory system example](#simple-memory-system-example)
+      - [Memory mapping](#memory-mapping)
+    - [Concurrent Programming](#concurrent-programming)
+      - [Concurrent threads](#concurrent-threads)
+      - [Threads vs. processes](#threads-vs-processes)
+      - [Posix threads (pthreads)](#posix-threads-pthreads)
+      - [Thread-based servers & design](#thread-based-servers--design)
+    - [Basics of Synchronization](#basics-of-synchronization)
+      - [Defining "shared" variables](#defining-shared-variables)
+      - [Threads memory model](#threads-memory-model)
+      - [Mapping variable instances to memory](#mapping-variable-instances-to-memory)
+      - [Synchronizing threads](#synchronizing-threads)
+      - [Semaphores](#semaphores)
+      - [Terminology](#terminology)
+      - [Race condition](#race-condition)
+      - [Locks](#locks)
+      - [Critical sections](#critical-sections)
+    - [Synchronization, continued](#synchronization-continued)
+      - [Mutexes](#mutexes)
+      - [Deadlocking, multiple attempts to lock the same lock](#deadlocking-multiple-attempts-to-lock-the-same-lock)
+      - [Linux implementation of mutexes](#linux-implementation-of-mutexes)
+      - [Condition variables](#condition-variables)
+      - [Semaphores](#semaphores-1)
+      - [Rendezvous (synchronization pattern)](#rendezvous-synchronization-pattern)
+      - [Barriers (synchronization pattern)](#barriers-synchronization-pattern)
+      - [Synchronization implementation](#synchronization-implementation)
+    - [Concurrency bugs](#concurrency-bugs)
+      - [Non-deadlock bugs](#non-deadlock-bugs)
+      - [Deadlock bugs](#deadlock-bugs)
 
 ### Virtualization and System Calls
 
@@ -445,7 +473,8 @@
 - **page table**: array of page table entries, maps virtual pages to physical ones
   - page entries: simply a grouping construct for bytes, typically ~4KB per page
     - transferred as a single unit
-![](photos/pagetable.png)
+
+    ![](photos/pagetable.png)
   - page hit: referenced VM word in physical memory (DRAM cache hit)
     - ex. reference to page @ PTE 1
   - page fault: referenced VM word not in physical memory (DRAM cache miss)
@@ -465,7 +494,7 @@
   - a well-chosen mapping function can improve locality
 1. simplifies memory allocation
     - any virtual page can be mapped to any physical page
-    - virtual apge can be stored in different physical pages at different times
+    - virtual page can be stored in different physical pages at different times
 2. allows for sharing of code/data across processes
     - can map virtual pages in different process virtual address spaces to same physical page
     ![](photos/vmmemorymanagement.png)
@@ -482,14 +511,16 @@
 #### Address translation
 ![](photos/pagetabletranslation.png)
 - page hit ($valid=1$)
-![](photos/translationhit.png)
+
+  ![](photos/translationhit.png)
   1. processor sends virtual address to MMU
   2. page table entry address (PTEA) sent to cache/memory
   3. page table entry (PTE) received
   4. MMU sends physical address to cache/memory
   5. cache/memory sends data word to processor
 - page fault ($valid=0$)
-![](photos/translationfault.png)
+
+  ![](photos/translationfault.png)
   1. same as above
   2. same as above
   3. same as above
@@ -509,9 +540,11 @@
 - accessing
 ![](photos/TLBaccess.png)
   - hit
+
     ![](photos/TLBhit.png)
     - eliminates a memory access
   - miss
+
     ![](photos/TLBmiss.png)
     - misses incur additional memory access but are rare (see below)
 #### Multi-level page tables
@@ -538,4 +571,278 @@
   - physical addresses: 12-bit
   - page size: 64 bytes $\implies$ page offset of $p=5 \; (2^5 = 64)$ bytes
     ![](photos/memoryexample.png)
-  -
+- got bored, see lecture 7
+
+#### Memory mapping
+- process where areas for VM are initialized by associating them with disk objects
+- these VM areas can get their initial values from (i.e. *backed by*) either
+  1. **regular file** on disk (ex. executable object file)
+    - initial page bytes come from section of file
+  2. **anonymous file** (nothing)
+    - first fault will allocate physical page of 0s (a *demand-zero page*)
+    - once page is written to (*dirtied*), treated like any other
+- dirty pages are copied b/w memory and special *swap file*
+- shared memory
+  - 2+ processes utilize some shared object (*private copy-on-write object*)
+  - in a process' VM, area associated with that object is flagged as private copy-on-write
+    - PTEs in this area are read-only
+
+      ![](photos/privatecowobj.png)
+  - attempting to write to private page triggers protection fault
+    - handler creates new read/write page
+    - copying deferred as long as possible
+
+      ![](photos/writetoprivatearea.png)
+
+### Concurrent Programming
+- traditionally, a process is considered as 
+
+  ![](photos/traditionalprocess.png)
+- instead, consider it as 
+
+  ![](photos/alternateprocess.png)
+- multiple thread processes
+  - we can associate multiple threads to a single process
+  - each thread has individual control flow, stack, and thread ID
+  - each thread shares the same code, data, and kernel context
+- we consider all threads associated with the same process to be in a "pool" (no hierarchy)
+#### Concurrent threads
+- occurs when thread flows overlap in time (o/w threads are sequential)
+  - ex. single core processor
+
+    ![](photos/concurrency.png)
+    - A and B, A and C are concurrent
+    - B and C are sequential
+  - single core processors simulate parallelism via slicing (see above)
+  - multicore processors can have true parallelism
+#### Threads vs. processes
+- similarities
+  - have their own logical control flow
+  - can run concurrently with others
+  - is context switched
+- differences
+  - threads share code, data: processes usually do not
+  - threads are usually less expensive
+    - process control (creating, reaping) is twice as expensive as thread control
+    - ex. on Linux, ~20K cycles to create & reap a process and $\le$ ~10K cycles to create & reap a thread
+#### Posix threads (pthreads)
+- **pthread**: standard interface of ~60 functions for manipulating threads in C
+- create & reap threads: `pthread_create()`, `pthread_join()`
+- getting thread ID: `pthread_self()`
+- terminating threads: `pthread_cancel()`, `pthread_exit()`
+  - `exit()` terminates all threads, `RET` terminates current thread
+- synchronize access to shared vars: `pthread_mutex_init`, `pthread_mutex_lock`/`unlock`
+#### Thread-based servers & design
+- issues w/ thread-based servers
+  - must run "detached" to avoid memory leak
+    - at any point, a thread is either *joinable* or *detached*
+    - joinable: can be reaped/killed by other threads
+    - detached: cannot be reaped/killed by other threads
+    - by default, threads are joinable: must use `pthread_detach(pthread_self())` to make detached
+  - need to avoid unintended sharing
+    - e.g. passing pointer to stack of main thread to `pthread_create`
+  - all functions being called by a thread have to be thread-safe
+- pros/cons of thread-based design
+  - pros
+    - easy to share data structs b/w threads
+    - threads more efficient than processes
+  - cons
+    - sharing of data can cause unexpected, hard-to-track errors
+
+### Basics of Synchronization
+#### Defining "shared" variables
+- var $x$ is shared iff **multiple threads reference an instance of $x$**
+#### Threads memory model
+- conceptually:
+  - multiple threads run within single process' context
+  - each thread has its own separate thread context (ID, stack, SP, PC, condition codes, GP registers)
+  - all threads share the remaining process context (code, data, heap, shared library segments, open files, installed handlers)
+- operationally, **this model is not strictly enforced**
+  - register values are truly separate/protected, but any thread can read/write to stack of another thread
+#### Mapping variable instances to memory
+- global vars & local static vars
+  - vars declared outside of a function and/or defined as static
+  - VM will contain **exactly one** instance of these
+- local vars
+  - non-static vars declared within scope of a function
+  - **each thread stack** contains one instance of the var
+#### Synchronizing threads
+- need to guarantee safe trajectory through progress graph (see Lecture 9)
+- achieved by synchronizing thread execution
+- in critial sections, *we need mutually exclusive access*
+#### Semaphores
+- non-negative global integer var
+- used for synchronization
+- manipulated by $P$ and $V$ operations
+  - $P(s)$
+    - if $s \ne 0$, then `--s` and `return`
+      - operation is atomic, so no need to worry about synchronization issues
+    - if $s = 0$, suspend the thread until $s \ne 0$ and then restart the thread (via $V$ operation)
+      - `--s` after restarting
+  - $V(s)$
+    - `++s`
+    - if any threads are suspended due to a $P$ operation (waiting for $s \ne 0$), then restart *exactly one* of those threads (which will then complete its $P$ by decrementing $s$)
+
+  ![](photos/semaphoreops.png)
+
+- use of semaphores for mutual exclusion
+  - associate unique semaphore mutex (initially 1) with each shared var
+  - surround critical sections with $P(mutex)$ and $V(mutex)$
+#### Terminology
+- *binary semaphore*: semaphore that is only 0 or 1
+- *mutex*: binary semaphore used for mutual exclusion
+  - $P$ operation *locks* mutex
+  - $V$ operation *unlocks* mutex
+  - a mutex is *held* if it is locked and not yet unlocked
+- *counting semaphore*: semaphore used as a counter for a set of available resources
+#### Race condition
+- situation where the result from multiple threads/processes operating on shared resources depends on the relative order in which processes gain access to the CPU
+- race conditions arise from non-atomic operations
+- prevented via the use of *locks*
+#### Locks
+- general idea:
+  1. obtain the lock
+  2. perform critical section
+  3. release the lock
+- lock needs two operations: *lock* and *unlock*
+- simple implementation
+  - lock (represented by `int`) is `0` if free, `1` if taken
+  - unlock:
+    - set `lock=0` (atomic operation)
+  - lock:
+    - check if `lock=0`
+    - if it is, set `lock=1`
+  - since the lock method requires two atomic operations (leaving door open for potential synchronization issues), use atomic assembly instruction `xchg(lock,1)`
+- spin-lock example
+
+![](photos/spinlock.png)
+
+#### Critical sections
+- piece of code that accesses a shared resource and whose execution *should* be atomic (i.e. shouldn't be interrupted by another thread also accessing the resource)
+
+### Synchronization, continued
+#### Mutexes
+- spin-locks are not ideal (wastes CPU cycles); better to sleep if lock unavailable
+- `pthread` mutexes
+  - data type `pthread_mutex_t`
+  - lock via `int pthread_mutex_lock(phthread_mutex_t* mutex)`
+  - unlock via `int pthread_mutex_unlock(phthread_mutex_t* mutex)`
+#### Deadlocking, multiple attempts to lock the same lock
+- to avoid deadlocking, threads should always acquire locks in the same order
+- if a single thread attempts to obtain the same mutex multiple times, result depends on mutex initialization
+  - `PTHREAD_MUTEX_DEFAULT` or `PTHREAD_MUTEX_NORMAL`
+    - deadlocks if a pthread tries to locks a second time via `pthread_mutex_lock` without first unlocking
+  - `PTHREAD_MUTEX_ERRORCHECK`
+    - avoids deadlock by returning nonzero value
+  - `PTHREAD_MUTEX_RECURSIVE`
+    - allows the same thread to recursively lock the mutex
+    - thread needs to have same number of `lock` and `unlock` calls
+#### Linux implementation of mutexes
+- bit 31 indicates lock status
+  - 1: taken
+  - 0: free
+- remaining bits indicate # of waiters
+- see lecture 11 for example implementation
+#### Condition variables
+- producer-consumer problem
+  - producer threads produce elements
+  - consumer threads consume these produced elements
+  - lock alone is not sufficient; only ensures mutual exclusion
+- **condition variables** allow one thread to inform others about changes to the state of a shared var/rsc and allow other threads to wait (*block*) for such a notification
+  - make sure to use `while` loop to check condition:
+  ```c
+  // declared previously:
+  pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
+  pthread_cond_t cond_var = PTHREAD_COND_INITIALIZER;
+
+  // ...
+
+  while(...) // whatever the checking condition is
+    pthread_cond_wait(&cond_var, &mtx)
+  ```
+- operations
+  - *signaling*: can be a broadcast (wakes everyone) or a single signal (wake up one waiter)
+    - broadcast function: `int pthread_cond_broadcast(pthread_cond_t *cond)`
+    - single signal: `int pthread_cond_signal(pthread_cond_t *cond)`
+  - *waiting*
+    - `int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex)`
+#### Semaphores
+- can also be used for signaling, mutual exclusion
+- recall: semaphore is an integer with two possible operations
+  - $P$: decrement, block if value is $< 0$ after decrement
+  - $V$: increment, wake a waiting thread (if there are any)
+- like an integer, but with certain differences:
+  1. can be initialized to any value, but after initialization can only be incremented/decremented by 1 at a time
+  2. if semaphore is negative after being decremented by a thread, thread is blocked and cannot continue until another thread increments the sempahore $\ge 0$
+  3. when semaphore incremented, wake a single waiting thread (if there are any)
+#### Rendezvous (synchronization pattern)
+- two threads:
+  - Thread `A`, comprised of statements `a1`, `a2`
+  - Thread `B`, comprised of statements `b1`, `b2`
+- `a1` happens before `b2` but `b1` happens before `a2`
+  - i.e. both threads are waiting for each other
+- how do we solve this?
+
+  ![](photos/rendezvoussolution.png)
+#### Barriers (synchronization pattern)
+- generalization of rendezvous problem to an arbitrary number of threads
+  - no thread reaches critical point until everyone has executed the rendezvous
+
+#### Synchronization implementation
+- if no sleeping is involved, done via atomic machine instructions
+  - e.g. spinlock using atomic compare/exchange instruction
+- if sleeping involved, done via futex system call
+- for pthreads, mutexes, cond. vars, and semaphores:
+  - operations are defined in the C library
+  - "fast" path (lock free): no need to go to kernel space, i.e. no syscall needed
+  - "slow" path (lock contended): C library invokes futex syscall
+- implementation of futex syscall
+  - check if rsc free
+  - if not, kernel puts calling process on a queue associated w/ lock/semaphore/cond. var
+  - kernel then switches to another process (happens atomically)
+
+### Concurrency bugs
+#### Non-deadlock bugs
+- *atomicity violation*
+  - e.g. function runs if a pointer is non-`NULL`, but pointer is set to `NULL` mid-execution
+    - function condition initially satisfied (pointer non-`NULL`), but then is interrupted by another thread which sets the pointer to `NULL`
+    - function body then raises null pointer exception
+  - fixed by using `pthread_mutex_lock(&lock)`, `pthread_mutex_unlock(&lock)` around critial section
+- *order violation*
+  - e.g. thread references object before it is initialized in another
+    - null-pointer dereference
+  - fixed by using condition var
+    - set condition var once initialization done
+    - make thread which references the object wait on the condition var
+#### Deadlock bugs
+- recall: process deadlocks iff it is waiting on a condition which will never be true
+- *deadlock*
+  - e.g. thread holds a lock, waits for another
+
+    ![](photos/deadlock.png)
+  - conditions for deadlock (all must be true)
+    - **mutual exclusion**: thread acquires lock
+    - **hold-and-wait**: thread holds lock and waits for an additional lock
+    - **no preemption**: a lock held by a thread cannot be "taken away"
+    - **circular wait**: hold-and-wait creats circular chain of threads
+
+- preventing circular waiting
+  - two locks: total ordering (always acquire locks in the same order)
+  - multiple locks: partial ordering (pairwise total ordering of locks)
+- preventing hold-and-wait
+  - acquire all locks at once
+  - add a "prevention" lock/unlock around the `pthread_mutex_lock` calls
+  - disadvantage: requires that we know ahead of time what locks are needed
+- preventing no preemption
+  - use `pthread_mutex_trylock()`
+    - holds lock if it is available, returns error code if lock already held
+
+      ![](photos/preemption.png)
+  - issues with `trylock`
+    - memory allocated after L1 acquisition needs to be released if L2 acquisition fails
+    - however, `trylock` doesn't preempt lock ownership itself
+    - only *allows* a thread to voluntarily give back ownership
+- preventing mutual exclusion
+  - don't use locks
+  - instead, use atomic functions based on hardware instructions
+  - 
